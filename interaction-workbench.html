@@ -2,6 +2,12 @@
 <style>
 :root{--bg:#f4f6fb;--card:#fff;--ink:#182033;--muted:#778198;--line:#e6e9f0;--purple:#6558e8;--green:#16865b}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 system-ui,"Noto Sans TC",sans-serif}header{background:#111520;color:white;padding:18px 24px;display:flex;justify-content:space-between;align-items:center}main{max-width:1100px;margin:auto;padding:24px}.panel{background:white;border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}.muted{color:var(--muted);font-size:12px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}label{display:block;font-size:12px;font-weight:700;margin:10px 0 5px}input,textarea,select{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit}textarea{min-height:110px}button{border:0;border-radius:8px;padding:10px 14px;background:var(--purple);color:white;font-weight:700;cursor:pointer;margin:4px 4px 4px 0}button.secondary{background:#eeeefe;color:#5046b8}button.ghost{background:white;border:1px solid var(--line);color:#394258}.row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1}.draft{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}.tag{font-size:11px;padding:4px 8px;border-radius:20px;background:#f0efff;color:#5548c8}.good{color:var(--green)}.warn{background:#fff7e8;padding:12px;border-radius:9px;color:#805d1b;font-size:12px}.hide{display:none}.comment{border:1px solid var(--line);border-radius:8px;padding:10px;margin:7px 0;cursor:pointer}.comment.selected{border:2px solid var(--purple);background:#f7f6ff}.status{font-size:11px;color:#586278}@media(max-width:700px){main{padding:12px}.grid{grid-template-columns:1fr}header{padding:14px}}
+.embed-preview{margin-top:10px;padding:12px;border:1px dashed var(--line);border-radius:10px;background:#fafbff}.embed-note{font-size:12px;color:var(--muted);margin-bottom:8px}
+.destination-links{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.destination-links a{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:#5146c8;text-decoration:none;font-weight:700}
+.destination-links a:hover{background:#f4f2ff;border-color:var(--purple);text-decoration:underline}
+.destination-links .destination-label{font-size:12px;color:var(--muted);align-self:center}
+
 </style></head><body>
 <header><div><b>THREADS PRO V3.1</b><div style="font-size:11px;color:#b8bfd0">人工審核互動工作台</div></div><a href="./index.html" style="color:white">返回 V3.0 後台</a></header>
 <main>
@@ -70,17 +76,24 @@ async function loadDrafts() {
         </div>
         <p>${escapeHtml((d.post_text || '').slice(0, 500))}</p>
         <div class="muted">匹配活動：${d.campaign_id ? '已匹配' : '待人工分配'} · 活動頁：${d.landing_page_url ? '已設定' : '未設定'} · LINE：${d.line_url ? '已設定' : '未設定'}</div>
+        <div class="destination-links">
+          ${safeExternalUrl(d.landing_page_url) ? '<a href="' + escapeHtml(safeExternalUrl(d.landing_page_url)) + '" target="_blank" rel="noopener noreferrer">開啟活動頁 ↗</a>' : ''}
+          ${safeExternalUrl(d.line_url) ? '<a href="' + escapeHtml(safeExternalUrl(d.line_url)) + '" target="_blank" rel="noopener noreferrer">開啟 LINE 客服 ↗</a>' : ''}
+          ${!safeExternalUrl(d.landing_page_url) && !safeExternalUrl(d.line_url) ? '<span class="destination-label">尚未設定可開啟的活動頁或 LINE 連結</span>' : ''}
+        </div>
         <label>選擇評論草稿</label>
         ${(Array.isArray(d.comments) ? d.comments : []).map((c, i) => `
           <div class="comment ${d.selected_comment === c ? 'selected' : ''}" data-comment="${encodeURIComponent(String(c))}" data-index="${i}">${escapeHtml(c)}</div>
         `).join('')}
         <div class="row">
           <button class="secondary approve" type="button">批准所選評論</button>
-          <button class="ghost copy" type="button">複製評論</button>
+          <button class="ghost copy" type="button">複製所選評論</button>
           <button class="ghost open" type="button">開啟原貼文</button>
+          <button class="ghost preview" type="button">免登入預覽公開貼文</button>
           <button class="ghost published" type="button">記錄人工發布</button>
           <button class="ghost reject" type="button">拒絕</button>
         </div>
+        <div class="embed-preview hide"></div>
         <div class="muted action-message" aria-live="polite"></div>
       </article>
     `).join('') || '<div class="muted">目前沒有評論草稿。</div>';
@@ -88,6 +101,7 @@ async function loadDrafts() {
     document.querySelectorAll('.draft').forEach(el => {
       const id = el.dataset.id;
       let selected = '';
+      let selectedPersisted = true;
       const selectedNode = el.querySelector('.comment.selected');
       if (selectedNode) {
         try { selected = decodeURIComponent(selectedNode.dataset.comment || ''); }
@@ -103,6 +117,8 @@ async function loadDrafts() {
         c.addEventListener('click', async () => {
           try {
             selected = decodeURIComponent(c.dataset.comment || '');
+            selectedPersisted = false;
+            el.querySelector('.approve').disabled = true;
             el.querySelectorAll('.comment').forEach(x => x.classList.remove('selected'));
             c.classList.add('selected');
             const { error } = await sb.from('interaction_drafts')
@@ -110,30 +126,30 @@ async function loadDrafts() {
               .eq('id', id)
               .eq('user_id', user.id);
             if (error) throw error;
-            message('已選取評論。');
+            selectedPersisted = true;
+            el.querySelector('.approve').disabled = false;
+            message('已選取評論並儲存。');
           } catch (e) {
-            message('選取失敗：' + (e.message || e));
+            message('選取儲存失敗：' + (e.message || e));
           }
         });
       });
 
       el.querySelector('.approve').addEventListener('click', async () => {
-        if (!selected) {
-          message('請先點選一則評論，再批准。');
+        if (!selected || !selectedPersisted) {
+          message('請先選擇評論並等待選取內容儲存完成。');
           return;
         }
         const btn = el.querySelector('.approve');
         btn.disabled = true;
         try {
-          const { error } = await sb.from('interaction_drafts')
-            .update({
-              selected_comment: selected,
-              review_status: '已批准'
-            })
-            .eq('id', id)
-            .eq('user_id', user.id);
-          if (error) throw error;
-          await writeLog(id, 'approve', { selected_comment: selected });
+          // State transitions go through the admin-checked Edge Function.
+          // selected_comment is persisted by the selection handler before this action.
+          const result = await invoke('record-interaction-action', {
+            draftId: id,
+            action: 'approve'
+          });
+          if (!result?.success) throw new Error(result?.error || '批准未成功');
           message('已批准。現在可以複製評論並到 Threads 手動發布。');
           await loadDrafts();
         } catch (e) {
@@ -143,21 +159,25 @@ async function loadDrafts() {
       });
 
       el.querySelector('.copy').addEventListener('click', async () => {
+        // Always read the one visibly selected comment in THIS post card.
+        // Never copy all drafts, nor reuse a selection from another post.
         const currentStatus = el.querySelector('.tag')?.textContent || '';
-        if (!selected) {
-          message('請先選擇一則評論。');
+        const selectedNode = el.querySelector('.comment.selected');
+        const oneComment = selectedNode ? selectedNode.textContent.trim() : '';
+        if (!oneComment) {
+          message('請先在這篇貼文下方點選一則評論。');
           return;
         }
         if (!currentStatus.includes('已批准')) {
-          message('請先批准評論，再複製。');
+          message('請先批准這篇貼文所選的評論，再複製。');
           return;
         }
         try {
           if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(selected);
+            await navigator.clipboard.writeText(oneComment);
           } else {
             const temp = document.createElement('textarea');
-            temp.value = selected;
+            temp.value = oneComment;
             temp.style.position = 'fixed';
             temp.style.opacity = '0';
             document.body.appendChild(temp);
@@ -166,8 +186,8 @@ async function loadDrafts() {
             temp.remove();
             if (!ok) throw new Error('瀏覽器不允許複製，請手動選取文字。');
           }
-          await writeLog(id, 'copied');
-          message('已複製評論，請到原貼文人工發布。');
+          await writeLog(id, 'copied', { selected_comment: oneComment });
+          message('已複製目前選取的單則評論。');
         } catch (e) {
           message('複製失敗：' + (e.message || e));
         }
@@ -175,23 +195,49 @@ async function loadDrafts() {
 
       el.querySelector('.open').addEventListener('click', () => {
         const link = el.querySelector('a');
-        if (link && link.href !== '#') window.open(link.href, '_blank', 'noopener');
-        else message('原貼文網址無效或不受支援。');
+        if (link && link.href !== '#') {
+          window.open(link.href, '_blank', 'noopener');
+          writeLog(id, 'opened', { post_url: link.href });
+        } else message('原貼文網址無效或不受支援。');
+      });
+      el.querySelector('.preview').addEventListener('click', () => {
+        const link = el.querySelector('a');
+        const preview = el.querySelector('.embed-preview');
+        if (!link || link.href === '#') { message('原貼文網址無效或不受支援。'); return; }
+        preview.classList.remove('hide');
+        preview.innerHTML = '';
+        const note = document.createElement('div');
+        note.className = 'embed-note';
+        note.textContent = 'Threads 官方公開貼文嵌入預覽。只有公開且允許嵌入的貼文可能免登入顯示；私人貼文、部分分享短網址或平台限制可能無法顯示。此功能不會繞過 Threads 登入限制。';
+        preview.appendChild(note);
+        const quote = document.createElement('blockquote');
+        quote.className = 'text-post-media';
+        quote.setAttribute('data-text-post-permalink', link.href);
+        quote.setAttribute('data-text-post-version', '0');
+        const a = document.createElement('a'); a.href = link.href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '在 Threads 查看原始貼文';
+        quote.appendChild(a); preview.appendChild(quote);
+        const script = document.createElement('script'); script.async = true; script.src = 'https://www.threads.net/embed.js';
+        script.onerror = () => { note.textContent = 'Threads 官方嵌入載入失敗。可改用「開啟原貼文」；是否需要登入由 Threads 決定。'; };
+        preview.appendChild(script);
+        message('已載入公開貼文預覽；若未顯示，可能是貼文類型或 Threads 的登入限制。');
       });
 
       el.querySelector('.published').addEventListener('click', async () => {
-        if (!selected) {
-          message('請先選擇已批准的評論。');
+        if (!selected || !selectedPersisted) {
+          message('請先選擇評論並等待選取內容儲存完成。');
+          return;
+        }
+        if (!(el.querySelector('.tag')?.textContent || '').includes('已批准')) {
+          message('必須先批准評論，才能記錄人工發布。');
           return;
         }
         if (!confirm('請確認你已在 Threads 原貼文成功發布此評論。系統只記錄你的確認，不會自行驗證。')) return;
         try {
-          const { error } = await sb.from('interaction_drafts')
-            .update({ review_status: '已發布' })
-            .eq('id', id)
-            .eq('user_id', user.id);
-          if (error) throw error;
-          await writeLog(id, 'manual_published', { selected_comment: selected });
+          const result = await invoke('record-interaction-action', {
+            draftId: id,
+            action: 'manual_published'
+          });
+          if (!result?.success) throw new Error(result?.error || '發布紀錄未成功');
           await loadDrafts();
         } catch (e) {
           message('記錄發布失敗：' + (e.message || e));
@@ -201,12 +247,11 @@ async function loadDrafts() {
       el.querySelector('.reject').addEventListener('click', async () => {
         if (!confirm('確定拒絕這篇評論草稿？')) return;
         try {
-          const { error } = await sb.from('interaction_drafts')
-            .update({ review_status: '已拒絕' })
-            .eq('id', id)
-            .eq('user_id', user.id);
-          if (error) throw error;
-          await writeLog(id, 'reject');
+          const result = await invoke('record-interaction-action', {
+            draftId: id,
+            action: 'reject'
+          });
+          if (!result?.success) throw new Error(result?.error || '拒絕操作未成功');
           await loadDrafts();
         } catch (e) {
           message('拒絕失敗：' + (e.message || e));
@@ -232,6 +277,12 @@ function safeUrl(u) {
       ['threads.net','www.threads.net','threads.com','www.threads.com'].includes(x.hostname)
       ? x.href : '#';
   } catch { return '#'; }
+}
+function safeExternalUrl(u) {
+  try {
+    const x = new URL(String(u || '').trim());
+    return x.protocol === 'https:' ? x.href : '';
+  } catch { return ''; }
 }
 
 $('reload').addEventListener('click', async () => {
